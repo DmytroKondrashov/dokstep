@@ -19,7 +19,7 @@ import type {
 	Workflow
 } from '#lib/types.js';
 import { getDocumentData } from './db.ts';
-import { fillDocx } from './docx/fill.ts';
+import { FORMATS, fillDocument } from './documents.ts';
 import { applyTransform } from './transform.ts';
 
 export const allFields = (steps: Step[]) => steps.flatMap((s) => s.fields);
@@ -84,7 +84,7 @@ export function outputFilename(doc: StepDoc, steps: Step[], fieldValues: Record<
 		allFields(steps).map((f) => [f.label.trim(), fieldValues[f.id] ?? ''])
 	);
 	const base = sanitizeFilename(fillPattern(doc.outputName || doc.name, byLabel)) || 'document';
-	return `${base}.docx`;
+	return `${base}${FORMATS[doc.format ?? 'docx'].ext}`;
 }
 
 export async function generateDoc(
@@ -106,7 +106,7 @@ export async function generateDoc(
 	);
 	return {
 		filename: outputFilename(doc, wf.steps, fieldValues),
-		data: await fillDocx(stored.data, replacements)
+		data: await fillDocument(doc.format ?? 'docx', stored.data, replacements)
 	};
 }
 
@@ -127,7 +127,7 @@ export async function generateZip(
 			const { filename, data } = await generateDoc(wf, step, doc, fieldValues);
 			let path = dir + filename;
 			for (let n = 2; used.has(path); n++)
-				path = `${dir}${filename.replace(/\.docx$/, '')} (${n}).docx`;
+				path = `${dir}${filename.replace(/(\.\w+)$/, ` (${n})$1`)}`;
 			used.add(path);
 			zip.file(path, data);
 		}

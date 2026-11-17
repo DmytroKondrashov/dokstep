@@ -256,7 +256,7 @@
 {/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div bind:this={root} class="docx" {onmouseup} {onclick}>
+<div bind:this={root} class="docx" class:plain={preview.plain} {onmouseup} {onclick}>
 	{#each preview.parts as part (part.name)}
 		{#if part.kind !== 'body'}
 			<div class="part-label" style:max-width={sheetWidth}>{LABEL[part.kind]}</div>
@@ -364,6 +364,15 @@
 		.cell {
 			padding: 0 20px;
 		}
+	}
+	/* .txt: monospace like a text editor, keep every space */
+	.docx.plain {
+		font-family: ui-monospace, 'Cascadia Mono', 'Consolas', 'DejaVu Sans Mono', monospace;
+		font-size: 10.5pt;
+		line-height: 1.5;
+	}
+	.docx.plain p {
+		tab-size: 8;
 	}
 	.docx p {
 		white-space: pre-wrap;

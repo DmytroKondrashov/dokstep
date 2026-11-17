@@ -1,7 +1,7 @@
 /**
  * Domain model.
  *
- * A workflow is an ordered list of steps. Each step owns example documents (.docx)
+ * A workflow is an ordered list of steps. Each step owns example documents (.docx, .txt)
  * and fields. A mark is a text range in one of the step's documents that is
  * replaced on generation by a field's value — a field of the same step (an input)
  * or of an earlier step (inherited), passed through an optional transform.
@@ -50,9 +50,13 @@ export interface Mark {
 	transform?: Transform;
 }
 
+export type DocFormat = 'docx' | 'txt';
+
 export interface StepDoc {
 	id: string;
 	name: string;
+	/** Missing on documents made before .txt support: those are .docx. */
+	format?: DocFormat;
 	/** Output file name without extension; `{Field label}` is replaced by the field value. */
 	outputName: string;
 }
@@ -151,6 +155,8 @@ export interface DocPreview {
 	text: Record<string, string>;
 	/** Page width (content area) in pt, for a roughly Word-like preview. */
 	pageWidth?: number;
+	/** Plain text (.txt): shown in a monospace font, no formatting. */
+	plain?: boolean;
 }
 
 /** An unmarked place where a field's example (maybe declined / re-formatted) occurs. */

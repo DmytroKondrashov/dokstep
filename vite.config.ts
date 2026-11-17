@@ -17,6 +17,8 @@ export default defineConfig({
 	],
 	// shevchenko loads a TensorFlow model; keep it out of the SSR bundle.
 	ssr: { external: ['shevchenko'] },
+	// Vitest otherwise resolves svelte's server build, where effects never run.
+	resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
 	test: {
 		include: ['tests/**/*.test.ts'],
 		// keep tests away from the real ./data database

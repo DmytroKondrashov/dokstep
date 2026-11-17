@@ -331,6 +331,6 @@ export async function createDemoWorkflow(): Promise<string> {
 		{ steps: [] }
 	);
 	const { steps } = await buildDemo((d) => addDocument(wf.id, `${d.name}.docx`, d.data, d.preview));
-	saveWorkflow(wf.id, { name: wf.name, description: wf.description, steps });
+	saveWorkflow(wf.id, { name: wf.name, description: wf.description, steps }, 0);
 	return wf.id;
 }

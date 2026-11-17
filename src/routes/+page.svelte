@@ -134,7 +134,7 @@
 			</span>
 			<span class="text-base font-semibold text-ink">Новий процес</span>
 			<span class="max-w-64 text-center text-sm">
-				Завантажте заповнені зразки .docx — і позначте, що в них змінюється
+				Завантажте заповнені зразки .docx чи .txt — і позначте, що в них змінюється
 			</span>
 		</button>
 	</div>

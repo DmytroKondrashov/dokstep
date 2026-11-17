@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { beforeNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
-	import { api, debounce } from '#lib/api.js';
+	import { api } from '#lib/api.js';
+	import { Autosave, guardPage } from '#lib/autosave.svelte.js';
 	import AppHeader from '#lib/components/AppHeader.svelte';
 	import DocPreview from '#lib/components/DocPreview.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -17,8 +18,36 @@
 	const wf = untrack(() => data.workflow);
 	const previews = untrack(() => data.previews);
 	const runId = untrack(() => data.run.id);
-	let name = $state(untrack(() => data.run.name));
-	const values = $state<Record<string, string>>(untrack(() => ({ ...data.run.values })));
+	type RunData = { name: string; values: Record<string, string> };
+	type Saved = {
+		updatedAt: string;
+		resolved: Record<string, string>;
+		markValues: Record<string, string>;
+	};
+
+	// Typed values are kept in the browser at once and saved in the background (see Autosave).
+	const save = new Autosave<RunData>({
+		key: `dokstep:run:${runId}`,
+		base: untrack(() => data.run.updatedAt),
+		delay: 350,
+		send: async (d, o) => {
+			const r = await api<Saved>(
+				`/api/runs/${runId}`,
+				'PUT',
+				{ ...d, rev: o.rev },
+				{ keepalive: o.keepalive }
+			);
+			resolved = r.resolved;
+			markValues = r.markValues;
+			return r.updatedAt;
+		}
+	});
+	/** Values typed in this browser that never reached the server come back. */
+	const draft = save.restore();
+	let name = $state(untrack(() => draft?.name ?? data.run.name));
+	const values = $state<Record<string, string>>(
+		untrack(() => ({ ...(draft?.values ?? data.run.values) }))
+	);
 	let resolved = $state<Record<string, string>>(untrack(() => data.resolved));
 	let markValues = $state<Record<string, string>>(untrack(() => data.markValues));
 	let stepIndex = $state(0);
@@ -28,33 +57,17 @@
 	const doc = $derived(step?.docs.find((d) => d.id === docId) ?? step?.docs[0]);
 
 	/* ---------- autosave + resolve ---------- */
-	let saveState = $state<'saved' | 'dirty' | 'saving' | 'error'>('saved');
-	const save = debounce(async () => {
-		saveState = 'saving';
-		try {
-			const r = await api<{ resolved: Record<string, string>; markValues: Record<string, string> }>(
-				`/api/runs/${runId}`,
-				'PUT',
-				{ name, values: $state.snapshot(values) }
-			);
-			resolved = r.resolved;
-			markValues = r.markValues;
-			saveState = save.pending() ? 'dirty' : 'saved';
-		} catch {
-			saveState = 'error';
-		}
-	}, 350);
 	let loaded = false;
 	$effect(() => {
-		JSON.stringify(values);
-		void name;
+		const snap = { name, values: $state.snapshot(values) };
+		// the first run only subscribes — unless a restored draft still has to reach the server
 		if (!loaded) {
 			loaded = true;
-			return;
+			if (!draft) return;
 		}
-		saveState = 'dirty';
-		save();
+		save.change(snap);
 	});
+	guardPage(save);
 	beforeNavigate(() => {
 		save.flush();
 	});
@@ -96,10 +109,17 @@
 	}
 
 	let downloading = $state(false);
+	let downloadError = $state(false);
 	async function download(query: string) {
 		downloading = true;
 		try {
 			await save.flush();
+			// documents are built from what the server has: never hand out stale ones
+			if (save.pending) {
+				downloadError = true;
+				return;
+			}
+			downloadError = false;
 			const a = document.createElement('a');
 			a.href = `/api/runs/${runId}/generate${query}`;
 			a.download = '';
@@ -125,7 +145,7 @@
 		/>
 	{/snippet}
 	{#snippet actions()}
-		<SaveStatus state={saveState} />
+		<SaveStatus state={save.state} />
 		<button class="btn btn-primary" disabled={!totalDocs || downloading} onclick={() => download('')}>
 			<Icon name="download" size={18} /> Усі документи (.zip)
 		</button>
@@ -164,6 +184,18 @@
 {#if step}
 	<div class="flex flex-wrap items-start gap-6 px-6 pt-6 pb-12">
 		<section aria-label="Дані кроку" class="flex min-w-0 flex-[1_1_440px] flex-col gap-4 lg:max-w-[540px]">
+			{#if draft}
+				<p class="flex items-start gap-2 rounded-xl bg-inh-soft px-4 py-3 text-sm text-inh-ink" role="status">
+					<Icon name="check" size={18} class="mt-0.5" /> Відновлено введені дані, які не встигли зберегтися на сервері.
+				</p>
+			{/if}
+			{#if downloadError}
+				<p class="flex items-start gap-2 rounded-xl bg-own-soft px-4 py-3 text-sm text-own-ink" role="alert">
+					<Icon name="alert" size={18} class="mt-0.5" />
+					Сервер зараз недоступний, тож документи сформувати не можна. Введені дані збережено в браузері —
+					спробуйте ще раз за хвилину.
+				</p>
+			{/if}
 			<div>
 				<p class="text-[13px] font-semibold text-muted">Крок {stepIndex + 1} з {wf.steps.length}</p>
 				<h1 class="text-2xl font-bold tracking-tight">{step.name}</h1>
@@ -250,7 +282,7 @@
 							<Icon name="file" size={18} class="text-muted" />
 							<span class="min-w-0 flex-1 truncate">{d.name}</span>
 							<button class="btn btn-sm" disabled={downloading} onclick={() => download(`?step=${step.id}&doc=${d.id}`)}>
-								<Icon name="download" /> .docx
+								<Icon name="download" /> .{d.format ?? 'docx'}
 							</button>
 						</li>
 					{/each}

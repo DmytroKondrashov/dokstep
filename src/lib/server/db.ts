@@ -13,6 +13,8 @@ mkdirSync(DATA_DIR, { recursive: true });
 const db = new DatabaseSync(join(DATA_DIR, 'dokstep.db'));
 db.exec(`
 	PRAGMA journal_mode = WAL;
+	-- every committed save is on disk before the request returns (survives a crash / power loss)
+	PRAGMA synchronous = FULL;
 	PRAGMA foreign_keys = ON;
 	CREATE TABLE IF NOT EXISTS workflows (
 		id TEXT PRIMARY KEY,
@@ -41,6 +43,13 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS runs_workflow ON runs(workflow_id);
 `);
+
+// Migration: `rev` = client revision of the last applied save (see saveWorkflow / saveRun).
+for (const table of ['workflows', 'runs']) {
+	const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+	if (!cols.some((c) => c.name === 'rev'))
+		db.exec(`ALTER TABLE ${table} ADD COLUMN rev INTEGER NOT NULL DEFAULT 0`);
+}
 
 const now = () => new Date().toISOString();
 export const newId = () => crypto.randomUUID().replaceAll('-', '').slice(0, 16);
@@ -103,21 +112,39 @@ export function createWorkflow(name: string, description = '', def?: WorkflowDef
 	return getWorkflow(id)!;
 }
 
-/** Save name/description/steps and drop documents no step refers to any more. */
-export function saveWorkflow(id: string, w: Pick<Workflow, 'name' | 'description' | 'steps'>) {
+/**
+ * Save name/description/steps and drop documents no step refers to any more.
+ * `rev` is the client's revision of this snapshot: a save older than the last applied one
+ * (a request that arrived late) is ignored. Returns the stored `updatedAt`.
+ */
+export function saveWorkflow(
+	id: string,
+	w: Pick<Workflow, 'name' | 'description' | 'steps'>,
+	rev: number
+): string {
 	const definition: WorkflowDefinition = { steps: w.steps };
-	db.prepare(
-		'UPDATE workflows SET name = ?, description = ?, definition = ?, updated_at = ? WHERE id = ?'
-	).run(w.name, w.description ?? '', JSON.stringify(definition), now(), id);
-	// Uploads land before the definition that refers to them is saved, so only
-	// documents orphaned for a while are removed.
+	const t = now();
+	const res = db
+		.prepare(
+			'UPDATE workflows SET name = ?, description = ?, definition = ?, updated_at = ?, rev = ? WHERE id = ? AND rev <= ?'
+		)
+		.run(w.name, w.description ?? '', JSON.stringify(definition), t, rev, id, rev);
+	if (!res.changes) return currentUpdatedAt('workflows', id);
+	// Uploads land before the definition that refers to them is saved (and a draft may be
+	// restored from the browser later), so only long-orphaned documents are removed.
 	const used = new Set(w.steps.flatMap((s) => s.docs.map((d) => d.id)));
-	const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
+	const cutoff = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
 	const docs = db
 		.prepare('SELECT id FROM documents WHERE workflow_id = ? AND created_at < ?')
 		.all(id, cutoff) as Row[];
 	const del = db.prepare('DELETE FROM documents WHERE id = ?');
 	for (const d of docs) if (!used.has(d.id as string)) del.run(d.id as string);
+	return t;
+}
+
+function currentUpdatedAt(table: 'workflows' | 'runs', id: string): string {
+	const r = db.prepare(`SELECT updated_at FROM ${table} WHERE id = ?`).get(id) as Row | undefined;
+	return (r?.updated_at as string) ?? now();
 }
 
 export function deleteWorkflow(id: string) {
@@ -184,13 +211,20 @@ export function createRun(workflowId: string, name: string): Run {
 	return getRun(id)!;
 }
 
-export function saveRun(id: string, name: string, values: Record<string, string>) {
-	db.prepare('UPDATE runs SET name = ?, "values" = ?, updated_at = ? WHERE id = ?').run(
-		name,
-		JSON.stringify(values),
-		now(),
-		id
-	);
+/** Save a run's name and values; same `rev` rule as saveWorkflow. Returns `updatedAt`. */
+export function saveRun(
+	id: string,
+	name: string,
+	values: Record<string, string>,
+	rev: number
+): string {
+	const t = now();
+	const res = db
+		.prepare(
+			'UPDATE runs SET name = ?, "values" = ?, updated_at = ?, rev = ? WHERE id = ? AND rev <= ?'
+		)
+		.run(name, JSON.stringify(values), t, rev, id, rev);
+	return res.changes ? t : currentUpdatedAt('runs', id);
 }
 
 export function deleteRun(id: string) {

@@ -2,9 +2,15 @@ import type { Transform } from './types.ts';
 
 /* Small browser-side helpers around the JSON endpoints. */
 
-export async function api<T>(url: string, method: string, body?: unknown): Promise<T> {
+export async function api<T>(
+	url: string,
+	method: string,
+	body?: unknown,
+	opts: { keepalive?: boolean } = {}
+): Promise<T> {
 	const res = await fetch(url, {
 		method,
+		keepalive: opts.keepalive,
 		headers: body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
 		body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body)
 	});

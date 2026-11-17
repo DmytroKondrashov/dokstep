@@ -115,3 +115,15 @@ export function suggestLabel(text: string): string {
 	const t = text.replace(/\s+/g, ' ').trim();
 	return t.length > 40 ? `${t.slice(0, 37)}…` : t;
 }
+
+/** A restored draft may point at documents that are gone from the server; drop those. */
+export function dropMissingDocs<T extends { steps: Step[] }>(
+	def: T,
+	previews: Record<string, unknown>
+): T {
+	for (const s of def.steps) {
+		const gone = s.docs.filter((d) => !previews[d.id]).map((d) => d.id);
+		for (const id of gone) removeDoc(s, id);
+	}
+	return def;
+}

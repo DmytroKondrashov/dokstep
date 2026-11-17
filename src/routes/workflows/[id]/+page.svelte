@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { beforeNavigate } from '$app/navigation';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import { Autosave, guardPage } from '#lib/autosave.svelte.js';
 	import { api, debounce } from '#lib/api.js';
 	import AppHeader from '#lib/components/AppHeader.svelte';
 	import DocPreview, {
@@ -16,6 +17,7 @@
 	import {
 		type TextRange,
 		addMarks,
+		dropMissingDocs,
 		availableFields,
 		fieldLocation,
 		findOccurrences,
@@ -27,18 +29,49 @@
 		uid
 	} from '#lib/editor.js';
 	import { describeTransform } from '#lib/transform.js';
-	import type { DocPreview as Preview, Mark, StepDoc, Suggestion, Transform } from '#lib/types.js';
+	import type {
+		DocFormat,
+		DocPreview as Preview,
+		Mark,
+		Step,
+		StepDoc,
+		Suggestion,
+		Transform
+	} from '#lib/types.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
-	// The editor owns a copy of the definition and autosaves it.
-	const wf = $state(
-		untrack(() => ({
-			name: data.workflow.name,
-			description: data.workflow.description,
-			steps: data.workflow.steps
-		}))
+	type Def = { name: string; description: string; steps: Step[] };
+
+	// The editor owns a copy of the definition. Every change is kept in the browser at once
+	// and saved to the server in the background (see Autosave).
+	const save = new Autosave<Def>({
+		key: `dokstep:workflow:${untrack(() => data.workflow.id)}`,
+		base: untrack(() => data.workflow.updatedAt),
+		delay: 600,
+		send: async (def, o) =>
+			(
+				await api<{ updatedAt: string }>(
+					`/api/workflows/${untrack(() => data.workflow.id)}`,
+					'PUT',
+					{ ...def, rev: o.rev },
+					{ keepalive: o.keepalive }
+				)
+			).updatedAt
+	});
+	/** Edits from this browser the server never got (closed tab, server down) come back. */
+	const draft = save.restore();
+	const wf = $state<Def>(
+		untrack(() =>
+			draft
+				? dropMissingDocs(draft, data.previews)
+				: {
+						name: data.workflow.name,
+						description: data.workflow.description,
+						steps: data.workflow.steps
+					}
+		)
 	);
 	let previews = $state.raw<Record<string, Preview>>(untrack(() => data.previews));
 	const workflowId = untrack(() => data.workflow.id);
@@ -51,28 +84,22 @@
 	);
 
 	/* ---------- autosave ---------- */
-	let saveState = $state<'saved' | 'dirty' | 'saving' | 'error'>('saved');
-	const save = debounce(async () => {
-		saveState = 'saving';
-		try {
-			await api(`/api/workflows/${workflowId}`, 'PUT', $state.snapshot(wf));
-			saveState = save.pending() ? 'dirty' : 'saved';
-		} catch {
-			saveState = 'error';
-		}
-	}, 600);
 	let loaded = false;
 	$effect(() => {
-		JSON.stringify(wf);
+		const snap = $state.snapshot(wf);
+		// the first run only subscribes — unless a restored draft still has to reach the server
 		if (!loaded) {
 			loaded = true;
-			return;
+			if (!draft) return;
 		}
-		saveState = 'dirty';
-		save();
+		save.change(snap);
 	});
+	guardPage(save);
 	beforeNavigate(() => {
 		save.flush();
+	});
+	onMount(() => {
+		if (draft) say('Відновлено зміни, які не встигли зберегтися на сервері.');
 	});
 
 	/* ---------- suggestions ---------- */
@@ -144,20 +171,20 @@
 	let uploading = $state(false);
 	let dragOver = $state(false);
 	async function upload(files: FileList | File[] | null) {
-		const list = [...(files ?? [])].filter((f) => f.name.toLowerCase().endsWith('.docx'));
-		if (!list.length) return say('Підтримуються лише файли .docx');
+		const list = [...(files ?? [])].filter((f) => /\.(docx|txt)$/i.test(f.name));
+		if (!list.length) return say('Підтримуються файли .docx і .txt');
 		const fd = new FormData();
 		for (const f of list) fd.append('files', f);
 		uploading = true;
 		try {
-			const res = await api<{ id: string; name: string; preview: Preview }[]>(
+			const res = await api<{ id: string; name: string; format: DocFormat; preview: Preview }[]>(
 				`/api/workflows/${workflowId}/documents`,
 				'POST',
 				fd
 			);
 			previews = { ...previews, ...Object.fromEntries(res.map((r) => [r.id, r.preview])) };
 			for (const r of res) {
-				step.docs.push({ id: r.id, name: r.name, outputName: r.name });
+				step.docs.push({ id: r.id, name: r.name, format: r.format, outputName: r.name });
 			}
 			docId = res[res.length - 1]?.id ?? docId;
 		} catch (e) {
@@ -416,15 +443,6 @@
 	}
 </script>
 
-<svelte:window
-	onbeforeunload={(e) => {
-		if (saveState !== 'saved') {
-			save.flush();
-			e.preventDefault();
-		}
-	}}
-/>
-
 <AppHeader crumbs={[{ href: '/', label: 'Процеси' }]}>
 	{#snippet title()}
 		<input
@@ -434,7 +452,7 @@
 		/>
 	{/snippet}
 	{#snippet actions()}
-		<SaveStatus state={saveState} />
+		<SaveStatus state={save.state} />
 		{#if data.runs.length}
 			<details class="relative">
 				<summary class="btn btn-sm list-none">Справи · {data.runs.length}</summary>
@@ -511,7 +529,7 @@
 				<div class="segmented" role="tablist" aria-label="Документи кроку">
 					{#each step.docs as d (d.id)}
 						<button role="tab" aria-selected={d.id === doc?.id} class="max-w-56 truncate" title={d.name} onclick={() => (docId = d.id)}>
-							{d.name}
+							{d.name}{#if d.format === 'txt'}<span class="ml-1.5 rounded bg-ground px-1 text-[11px] font-semibold text-muted">TXT</span>{/if}
 						</button>
 					{/each}
 					<label class="flex h-9 cursor-pointer items-center gap-1 rounded-[7px] px-3 text-sm font-semibold text-muted hover:text-ink">
@@ -519,7 +537,7 @@
 						{uploading ? 'Завантаження…' : 'Документ'}
 						<input
 							type="file"
-							accept=".docx"
+							accept=".docx,.txt"
 							multiple
 							class="sr-only"
 							onchange={(e) => {
@@ -563,7 +581,7 @@
 									>
 								{:else}{part.text}{/if}
 							{/each}
-							<span class="text-muted">.docx</span>
+							<span class="text-muted">.{doc.format ?? 'docx'}</span>
 						</span>
 						<button class="btn btn-sm" onclick={() => (editingName = true)}>Змінити</button>
 					{/if}
@@ -602,11 +620,11 @@
 					</span>
 					<p class="mb-2 text-lg font-semibold">Завантажте зразки документів цього кроку</p>
 					<p class="mb-5 max-w-md text-sm text-muted">
-						Перетягніть сюди один або кілька заповнених .docx. Потім виділіть у них частини, що змінюються.
+						Перетягніть сюди один або кілька заповнених документів .docx або .txt. Потім виділіть у них частини, що змінюються.
 					</p>
 					<label class="btn btn-primary cursor-pointer">
 						Обрати файли
-						<input type="file" accept=".docx" multiple class="sr-only" onchange={(e) => upload(e.currentTarget.files)} />
+						<input type="file" accept=".docx,.txt" multiple class="sr-only" onchange={(e) => upload(e.currentTarget.files)} />
 					</label>
 				</div>
 			{/if}
