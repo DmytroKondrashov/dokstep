@@ -2,34 +2,48 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { api, debounce } from '#lib/api.js';
+	import AppHeader from '#lib/components/AppHeader.svelte';
+	import DocPreview from '#lib/components/DocPreview.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import SaveStatus from '#lib/components/SaveStatus.svelte';
 	import { inheritedFields } from '#lib/editor.js';
+	import { fillPreview } from '#lib/fillPreview.js';
+	import { describeTransform } from '#lib/transform.js';
+	import type { Field } from '#lib/types.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	const wf = untrack(() => data.workflow);
+	const previews = untrack(() => data.previews);
 	const runId = untrack(() => data.run.id);
 	let name = $state(untrack(() => data.run.name));
 	const values = $state<Record<string, string>>(untrack(() => ({ ...data.run.values })));
 	let resolved = $state<Record<string, string>>(untrack(() => data.resolved));
+	let markValues = $state<Record<string, string>>(untrack(() => data.markValues));
 	let stepIndex = $state(0);
+	let docId = $state<string | null>(null);
+	let focusedField = $state<string | null>(null);
 	const step = $derived(wf.steps[stepIndex]);
+	const doc = $derived(step?.docs.find((d) => d.id === docId) ?? step?.docs[0]);
 
 	/* ---------- autosave + resolve ---------- */
 	let saveState = $state<'saved' | 'dirty' | 'saving' | 'error'>('saved');
 	const save = debounce(async () => {
 		saveState = 'saving';
 		try {
-			const r = await api<{ resolved: Record<string, string> }>(`/api/runs/${runId}`, 'PUT', {
-				name,
-				values: $state.snapshot(values)
-			});
+			const r = await api<{ resolved: Record<string, string>; markValues: Record<string, string> }>(
+				`/api/runs/${runId}`,
+				'PUT',
+				{ name, values: $state.snapshot(values) }
+			);
 			resolved = r.resolved;
+			markValues = r.markValues;
 			saveState = save.pending() ? 'dirty' : 'saved';
 		} catch {
 			saveState = 'error';
 		}
-	}, 400);
+	}, 350);
 	let loaded = false;
 	$effect(() => {
 		JSON.stringify(values);
@@ -45,10 +59,41 @@
 		save.flush();
 	});
 
-	const isAuto = (id: string) => !values[id]?.trim();
-	const stepEmpty = (i: number) => wf.steps[i].fields.filter((f) => !resolved[f.id]?.trim()).length;
+	/* ---------- view data ---------- */
+	const labels = new Map(wf.steps.flatMap((s) => s.fields).map((f) => [f.id, f.label]));
+	const isAuto = (f: Field) => !values[f.id]?.trim() && !!f.defaultFrom;
+	const isEmpty = (f: Field) => !resolved[f.id]?.trim();
+	const emptyIn = (i: number) => wf.steps[i].fields.filter(isEmpty).length;
+	const stepState = (i: number) => (i === stepIndex ? 'current' : emptyIn(i) ? 'todo' : 'done');
 	const inherited = $derived(inheritedFields(wf.steps, stepIndex));
 	const totalDocs = wf.steps.reduce((n, s) => n + s.docs.length, 0);
+
+	const filled = $derived.by(() => {
+		if (!doc || !previews[doc.id]) return null;
+		const marks = step.marks.filter((m) => m.docId === doc.id);
+		return fillPreview(
+			previews[doc.id],
+			marks.map((m) => ({
+				id: m.id,
+				para: m.para,
+				start: m.start,
+				end: m.end,
+				value: markValues[m.id] ?? '',
+				label: labels.get(m.fieldId) ?? '?'
+			}))
+		);
+	});
+	const active = $derived(
+		new Set(
+			focusedField ? step.marks.filter((m) => m.fieldId === focusedField).map((m) => m.id) : []
+		)
+	);
+
+	function autoHint(f: Field) {
+		if (!f.defaultFrom) return '';
+		const t = describeTransform(f.defaultFrom.transform);
+		return `${labels.get(f.defaultFrom.fieldId) ?? '?'}${t ? ` · ${t}` : ''}`;
+	}
 
 	let downloading = $state(false);
 	async function download(query: string) {
@@ -63,158 +108,194 @@
 			setTimeout(() => (downloading = false), 800);
 		}
 	}
+
+	function go(i: number) {
+		stepIndex = i;
+		docId = null;
+		focusedField = null;
+	}
 </script>
 
-<div class="flex h-[calc(100vh-3rem)] flex-col">
-	<div class="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
-		<a href="/" class="btn btn-sm">← Головна</a>
-		<input class="input max-w-md font-semibold" bind:value={name} aria-label="Назва справи" />
-		<span class="text-xs text-slate-500">
-			{wf.name} ·
-			{#if saveState === 'saved'}збережено{:else if saveState === 'error'}<span class="text-red-600">помилка збереження</span>{:else}збереження…{/if}
-		</span>
-		<div class="ml-auto flex gap-2">
-			<a href="/workflows/{wf.id}" class="btn">Редагувати процес</a>
-			<button class="btn btn-primary" disabled={!totalDocs || downloading} onclick={() => download('')}>
-				⤓ Усі документи (.zip)
-			</button>
-		</div>
-	</div>
+<AppHeader crumbs={[{ href: '/', label: 'Процеси' }, { href: `/workflows/${wf.id}`, label: wf.name }]}>
+	{#snippet title()}
+		<input
+			class="h-9 w-[min(24rem,50vw)] rounded-lg border border-transparent bg-transparent px-2 text-[17px] font-semibold hover:border-line focus:border-accent focus:bg-surface"
+			bind:value={name}
+			aria-label="Назва справи"
+		/>
+	{/snippet}
+	{#snippet actions()}
+		<SaveStatus state={saveState} />
+		<button class="btn btn-primary" disabled={!totalDocs || downloading} onclick={() => download('')}>
+			<Icon name="download" size={18} /> Усі документи (.zip)
+		</button>
+	{/snippet}
+</AppHeader>
 
-	<div class="grid min-h-0 flex-1 grid-cols-[16rem_1fr]">
-		<nav class="overflow-auto border-r border-slate-200 bg-white p-3">
-			<ol class="grid gap-1">
-				{#each wf.steps as s, i (s.id)}
-					{@const empty = stepEmpty(i)}
-					<li>
-						<button
-							class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm {i === stepIndex
-								? 'bg-blue-50 text-blue-800'
-								: 'hover:bg-slate-100'}"
-							onclick={() => (stepIndex = i)}
-						>
-							<span
-								class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs {empty
-									? 'bg-slate-200 text-slate-600'
-									: 'bg-green-600 text-white'}">{empty ? i + 1 : '✓'}</span
-							>
-							<span class="min-w-0 flex-1 truncate">{s.name}</span>
-						</button>
-					</li>
-				{/each}
-			</ol>
-		</nav>
+<nav aria-label="Кроки" class="border-b border-line bg-surface">
+	<ol class="flex items-center gap-2 overflow-x-auto px-6 py-3">
+		{#each wf.steps as s, i (s.id)}
+			{@const st = stepState(i)}
+			<li class="flex items-center gap-2">
+				<button
+					class="flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm {st === 'current'
+						? 'bg-accent-soft font-semibold text-accent-ink'
+						: 'hover:bg-sunken'}"
+					aria-current={st === 'current' ? 'step' : undefined}
+					onclick={() => go(i)}
+				>
+					<span
+						class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[13px] font-bold {st === 'current'
+							? 'bg-accent text-white'
+							: st === 'done'
+								? 'bg-inh-line text-white'
+								: 'bg-ground text-muted'}"
+					>
+						{#if st === 'done'}<Icon name="check" size={15} stroke={2.6} /><span class="sr-only">готово</span>{:else}{i + 1}{/if}
+					</span>
+					<span class="max-w-56 truncate">{s.name}</span>
+				</button>
+				{#if i < wf.steps.length - 1}<span class="h-px w-6 bg-line" aria-hidden="true"></span>{/if}
+			</li>
+		{/each}
+	</ol>
+</nav>
 
-		<main class="overflow-auto p-6">
-			{#if step}
-				<div class="mx-auto max-w-3xl">
-					<h1 class="mb-1 text-xl font-semibold">{stepIndex + 1}. {step.name}</h1>
-					<p class="mb-6 text-sm text-slate-500">
-						Документи: {step.docs.map((d) => d.name).join(', ') || '—'}
+{#if step}
+	<div class="flex flex-wrap items-start gap-6 px-6 pt-6 pb-12">
+		<section aria-label="Дані кроку" class="flex min-w-0 flex-[1_1_440px] flex-col gap-4 lg:max-w-[540px]">
+			<div>
+				<p class="text-[13px] font-semibold text-muted">Крок {stepIndex + 1} з {wf.steps.length}</p>
+				<h1 class="text-2xl font-bold tracking-tight">{step.name}</h1>
+			</div>
+
+			<div class="card grid gap-5 p-5">
+				{#if !step.fields.length}
+					<p class="text-sm text-muted">
+						У цьому кроці нічого вводити не потрібно — усі дані беруться з попередніх кроків.
 					</p>
-
-					{#if step.fields.length}
-						<section class="card mb-6 grid gap-4 p-4">
-							{#each step.fields as f (f.id)}
-								{@const auto = isAuto(f.id) && !!f.defaultFrom && !!resolved[f.id]}
-								<label class="block">
-									<span class="label flex items-center gap-2">
-										{f.label}
-										{#if auto}<span class="rounded bg-green-100 px-1.5 text-[10px] font-semibold uppercase text-green-700">авто</span>{/if}
-									</span>
-									<div class="flex gap-1">
-										{#if f.multiline}
-											<textarea
-												class="input min-h-24"
-												bind:value={values[f.id]}
-												placeholder={auto ? resolved[f.id] : `напр.: ${f.example}`}
-											></textarea>
-										{:else}
-											<input
-												class="input"
-												bind:value={values[f.id]}
-												placeholder={auto ? resolved[f.id] : `напр.: ${f.example}`}
-											/>
-										{/if}
-										{#if auto}
-											<button
-												type="button"
-												class="btn btn-sm"
-												title="Скопіювати автоматичне значення для редагування"
-												onclick={() => (values[f.id] = resolved[f.id])}>✎</button
-											>
-										{:else if f.defaultFrom && !isAuto(f.id)}
-											<button
-												type="button"
-												class="btn btn-sm"
-												title="Повернути автоматичне значення"
-												onclick={() => (values[f.id] = '')}>↺</button
-											>
-										{/if}
-									</div>
-								</label>
-							{/each}
-						</section>
-					{:else}
-						<p class="card mb-6 p-4 text-sm text-slate-500">
-							У цьому кроці нічого вводити не потрібно — усі дані беруться з попередніх кроків.
-						</p>
-					{/if}
-
-					{#if inherited.length}
-						<section class="mb-6">
-							<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">З попередніх кроків</h2>
-							<dl class="card divide-y divide-slate-100 text-sm">
-								{#each inherited as o (o.field.id)}
-									<div class="flex gap-3 px-4 py-2">
-										<dt class="w-48 shrink-0 text-slate-500">{o.field.label}</dt>
-										<dd class="min-w-0 flex-1 whitespace-pre-wrap font-serif">
-											{#if resolved[o.field.id]}{resolved[o.field.id]}{:else}<span class="text-red-600">не заповнено</span>{/if}
-										</dd>
-										<button class="text-xs text-blue-700 hover:underline" onclick={() => (stepIndex = o.stepIndex)}>
-											крок {o.stepIndex + 1}
-										</button>
-									</div>
-								{/each}
-							</dl>
-						</section>
-					{/if}
-
-					<section class="card p-4">
-						<h2 class="mb-3 text-sm font-semibold">Документи кроку</h2>
-						{#if stepEmpty(stepIndex)}
-							<p class="mb-3 text-sm text-amber-700">
-								Порожніх полів: {stepEmpty(stepIndex)} — у документах вони будуть пропущені.
-							</p>
+				{/if}
+				{#each step.fields as f (f.id)}
+					{@const auto = isAuto(f)}
+					<div>
+						<label for="f-{f.id}" class="label flex items-center gap-2">
+							{f.label}
+							{#if auto}<span class="rounded-md bg-inh-soft px-1.5 py-px text-[11px] font-bold tracking-wide text-inh-ink uppercase">авто</span>{/if}
+						</label>
+						{#if f.multiline}
+							<textarea
+								id="f-{f.id}"
+								class="input min-h-24"
+								bind:value={values[f.id]}
+								placeholder={auto ? resolved[f.id] : `напр.: ${f.example}`}
+								onfocus={() => (focusedField = f.id)}
+							></textarea>
+						{:else}
+							<input
+								id="f-{f.id}"
+								class="input"
+								bind:value={values[f.id]}
+								placeholder={auto ? resolved[f.id] : `напр.: ${f.example}`}
+								onfocus={() => (focusedField = f.id)}
+							/>
 						{/if}
-						<ul class="mb-3 grid gap-2">
-							{#each step.docs as d (d.id)}
-								<li class="flex items-center gap-2 text-sm">
-									<span class="min-w-0 flex-1 truncate">📄 {d.name}</span>
-									<button
-										class="btn btn-sm"
-										disabled={downloading}
-										onclick={() => download(`?step=${step.id}&doc=${d.id}`)}>⤓ .docx</button
-									>
-								</li>
-							{/each}
-						</ul>
-						<div class="flex justify-between gap-2">
-							<button class="btn" disabled={stepIndex === 0} onclick={() => stepIndex--}>← Назад</button>
-							<div class="flex gap-2">
-								{#if step.docs.length > 1}
-									<button class="btn" disabled={downloading} onclick={() => download(`?step=${step.id}`)}>
-										⤓ Усі документи кроку
+						{#if f.defaultFrom}
+							<div class="mt-1.5 flex flex-wrap items-center gap-2 text-[13px] text-muted">
+								{#if auto}
+									<span class="flex-1">Автоматично: {autoHint(f)}</span>
+									<button class="font-semibold text-accent hover:underline" onclick={() => (values[f.id] = resolved[f.id])}>
+										Змінити вручну
+									</button>
+								{:else}
+									<span class="flex-1">Введено вручну</span>
+									<button class="font-semibold text-accent hover:underline" onclick={() => (values[f.id] = '')}>
+										Повернути автоматичне
 									</button>
 								{/if}
-								<button class="btn btn-primary" disabled={stepIndex >= wf.steps.length - 1} onclick={() => stepIndex++}>
-									Далі →
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+
+			{#if inherited.length}
+				<section class="card p-5">
+					<h2 class="section-title mb-3">З попередніх кроків</h2>
+					<dl class="grid gap-y-2.5 text-sm">
+						{#each inherited as o (o.field.id)}
+							<div class="grid grid-cols-[minmax(0,11rem)_1fr_auto] items-baseline gap-3">
+								<dt class="text-muted">{o.field.label}</dt>
+								<dd class="min-w-0 font-paper text-base break-words whitespace-pre-wrap">
+									{#if resolved[o.field.id]}{resolved[o.field.id]}{:else}<span class="font-sans text-sm text-danger">не заповнено</span>{/if}
+								</dd>
+								<button class="text-[13px] font-semibold text-accent hover:underline" onclick={() => go(o.stepIndex)}>
+									крок {o.stepIndex + 1}
 								</button>
 							</div>
-						</div>
-					</section>
-				</div>
+						{/each}
+					</dl>
+				</section>
 			{/if}
-		</main>
+
+			<section class="card p-5">
+				<h2 class="section-title mb-3">Документи кроку</h2>
+				{#if emptyIn(stepIndex)}
+					<p class="mb-3 flex items-center gap-2 rounded-[10px] bg-own-soft px-3 py-2 text-[13px] text-own-ink">
+						<Icon name="alert" /> Порожніх полів: {emptyIn(stepIndex)} — у документах ці місця залишаться порожніми.
+					</p>
+				{/if}
+				<ul class="mb-4 grid gap-2">
+					{#each step.docs as d (d.id)}
+						<li class="flex items-center gap-3 rounded-[10px] border border-line-soft p-2.5 text-sm">
+							<Icon name="file" size={18} class="text-muted" />
+							<span class="min-w-0 flex-1 truncate">{d.name}</span>
+							<button class="btn btn-sm" disabled={downloading} onclick={() => download(`?step=${step.id}&doc=${d.id}`)}>
+								<Icon name="download" /> .docx
+							</button>
+						</li>
+					{/each}
+				</ul>
+				<div class="flex flex-wrap justify-between gap-2">
+					<button class="btn" disabled={stepIndex === 0} onclick={() => go(stepIndex - 1)}>
+						<Icon name="chevron-left" /> Назад
+					</button>
+					<div class="flex flex-wrap gap-2">
+						{#if step.docs.length > 1}
+							<button class="btn" disabled={downloading} onclick={() => download(`?step=${step.id}`)}>Усі документи кроку</button>
+						{/if}
+						{#if stepIndex < wf.steps.length - 1}
+							<button class="btn btn-primary" onclick={() => go(stepIndex + 1)}>Далі <Icon name="chevron" /></button>
+						{:else}
+							<button class="btn btn-primary" disabled={downloading} onclick={() => download('')}>
+								<Icon name="download" /> Завантажити все
+							</button>
+						{/if}
+					</div>
+				</div>
+			</section>
+		</section>
+
+		<section aria-label="Попередній перегляд" class="min-w-0 flex-[999_1_560px]">
+			<div class="mb-3 flex flex-wrap items-center gap-3">
+				<h2 class="section-title">Попередній перегляд</h2>
+				{#if step.docs.length > 1}
+					<div class="segmented" role="tablist" aria-label="Документи кроку">
+						{#each step.docs as d (d.id)}
+							<button role="tab" aria-selected={d.id === doc?.id} class="max-w-56 truncate" onclick={() => (docId = d.id)}>{d.name}</button>
+						{/each}
+					</div>
+				{/if}
+				<span class="flex-1"></span>
+				<span class="flex items-center gap-3 text-[13px] text-muted">
+					<span class="flex items-center gap-1.5"><span class="h-3 w-4 rounded-sm bg-accent-soft shadow-[inset_0_-2px_0_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"></span>значення</span>
+					<span class="flex items-center gap-1.5"><span class="h-3 w-4 rounded-sm border border-dashed border-own-line bg-own-soft"></span>не заповнено</span>
+				</span>
+			</div>
+			{#if filled}
+				<DocPreview preview={filled.preview} ranges={filled.ranges} {active} />
+			{:else}
+				<p class="card p-6 text-sm text-muted">У цього кроку немає документів.</p>
+			{/if}
+		</section>
 	</div>
-</div>
+{/if}

@@ -61,6 +61,16 @@ export async function resolveFields(
 const markValue = (m: Mark, fieldValues: Record<string, string>) =>
 	applyTransform(fieldValues[m.fieldId] ?? '', m.transform);
 
+/** The text every mark becomes (its field's value, transformed), by mark id. */
+export async function resolveMarks(
+	steps: Step[],
+	fieldValues: Record<string, string>
+): Promise<Record<string, string>> {
+	const marks = steps.flatMap((s) => s.marks);
+	const values = await Promise.all(marks.map((m) => markValue(m, fieldValues)));
+	return Object.fromEntries(marks.map((m, i) => [m.id, values[i]]));
+}
+
 function sanitizeFilename(s: string) {
 	return s
 		.replace(/[\\/:*?"<>|\n\r\t]+/g, '_')

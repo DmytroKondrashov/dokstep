@@ -3,6 +3,7 @@
 	import { availableFields, fieldLocation, suggestLabel } from '#lib/editor.js';
 	import type { Mark, Step, Transform } from '#lib/types.js';
 	import TransformEditor from './TransformEditor.svelte';
+	import Icon from './Icon.svelte';
 	import TransformPreview from './TransformPreview.svelte';
 
 	type Mode =
@@ -14,7 +15,7 @@
 				fieldId?: string;
 				transform?: Transform;
 		  }
-		| { kind: 'mark'; mark: Mark; rect: DOMRect };
+		| { kind: 'mark'; mark: Mark; text: string; rect: DOMRect };
 
 	interface Props {
 		mode: Mode;
@@ -56,28 +57,31 @@
 	/* ---------- existing mark ---------- */
 	const mark = $derived(mode.kind === 'mark' ? mode.mark : null);
 	const loc = $derived(fieldLocation(steps, mark?.fieldId ?? linkField));
+	const own = $derived(!!loc && loc.stepIndex === stepIndex);
+
+	/** What the example becomes with the chosen form, to compare with the selected text. */
+	let produced = $state('');
+	const target = $derived(mode.text.trim());
+	const matches = $derived(!!produced && produced.trim() === target);
 
 	let box: HTMLElement;
+	const W = 400;
 	const pos = $derived.by(() => {
 		const r = mode.rect;
-		const w = 400;
-		const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
-		const below = r.bottom + 8;
-		return below + 360 < window.innerHeight
-			? `left:${left}px;top:${below}px;width:${w}px`
-			: `left:${left}px;bottom:${window.innerHeight - r.top + 8}px;width:${w}px`;
+		const left = Math.max(12, Math.min(r.left, window.innerWidth - W - 12));
+		const below = window.innerHeight - r.bottom - 20;
+		const above = r.top - 20;
+		return below >= 420 || below >= above
+			? `left:${left}px;top:${r.bottom + 8}px;max-height:${Math.max(below, 260)}px`
+			: `left:${left}px;bottom:${window.innerHeight - r.top + 8}px;max-height:${above}px`;
 	});
 
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') onclose();
 	}
 	function onpointerdown(e: PointerEvent) {
-		if (
-			box &&
-			!box.contains(e.target as Node) &&
-			!(e.target as HTMLElement).closest('[data-range]')
-		)
-			onclose();
+		const t = e.target as HTMLElement;
+		if (box && !box.contains(t) && !t.closest('[data-range]') && !t.closest('.chip')) onclose();
 	}
 	const focus = (el: HTMLInputElement) => {
 		el.focus();
@@ -87,132 +91,123 @@
 
 <svelte:window {onkeydown} {onpointerdown} />
 
-<div bind:this={box} class="card fixed z-50 p-3 shadow-xl" style={pos}>
+{#snippet check(value: string, transform: Transform | undefined)}
+	<div class="flex items-start gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] {matches ? 'bg-[#e9f6ef] text-inh-ink' : 'bg-own-soft text-own-ink'}">
+		<Icon name={matches ? 'check' : 'alert'} size={18} stroke={2.2} class="mt-px" />
+		<span>
+			Зі зразка «{value}» вийде <TransformPreview {value} {transform} bind:result={produced} />
+			{matches ? '— збігається з виділеним.' : '— не збігається з виділеним. Перевірте відмінок і формат.'}
+		</span>
+	</div>
+{/snippet}
+
+{#snippet fieldSelect(value: string, onchange: (id: string) => void)}
+	<label class="block">
+		<span class="label">Поле</span>
+		<select class="input" {value} onchange={(e) => onchange(e.currentTarget.value)}>
+			<option value="" disabled>— оберіть поле —</option>
+			{#each groups as g (g.name)}
+				<optgroup label={g.name}>
+					{#each g.fields as f (f.id)}<option value={f.id}>{f.label}</option>{/each}
+				</optgroup>
+			{/each}
+		</select>
+	</label>
+{/snippet}
+
+<div
+	bind:this={box}
+	role="dialog"
+	aria-label={mode.kind === 'new' ? 'Позначити фрагмент' : 'Позначка'}
+	class="fixed z-50 flex w-[400px] max-w-[calc(100vw-24px)] flex-col gap-3.5 overflow-y-auto rounded-[14px] border border-[#d4d9e1] bg-surface p-4 shadow-[0_2px_4px_rgb(22_27_38/0.06),0_16px_40px_rgb(22_27_38/0.16)]"
+	style={pos}
+>
+	<div class="flex items-start gap-2.5">
+		<div class="min-w-0 flex-1">
+			<div class="mb-0.5 text-xs text-muted">
+				{#if mode.kind === 'new'}Виділений фрагмент{:else if own}Поле цього кроку — вводиться{:else if loc}З кроку {loc.stepIndex + 1}: {steps[loc.stepIndex].name}{:else}Поле видалено{/if}
+			</div>
+			<div class="line-clamp-3 font-paper text-[17px]">{mode.text}</div>
+		</div>
+		<button class="btn btn-ghost btn-icon bg-ground" aria-label="Закрити" onclick={onclose}><Icon name="x" /></button>
+	</div>
+
 	{#if mode.kind === 'new'}
-		<p class="mb-2 line-clamp-3 rounded bg-slate-100 px-2 py-1 font-serif text-sm">{mode.text}</p>
-		<div class="mb-3 flex gap-1 text-sm">
-			<button class="btn btn-sm" class:btn-primary={tab === 'create'} onclick={() => (tab = 'create')}>
-				Нове поле
-			</button>
-			<button
-				class="btn btn-sm"
-				class:btn-primary={tab === 'link'}
-				disabled={!options.length}
-				onclick={() => (tab = 'link')}
-			>
-				Взяти з поля…
-			</button>
+		<div class="segmented grid grid-cols-2">
+			<button aria-pressed={tab === 'create'} onclick={() => (tab = 'create')}>Нове поле</button>
+			<button aria-pressed={tab === 'link'} disabled={!options.length} onclick={() => (tab = 'link')}>Взяти з поля</button>
 		</div>
 
 		{#if tab === 'create'}
 			<form
+				class="grid gap-3"
 				onsubmit={(e) => {
 					e.preventDefault();
-					if (label.trim())
-						oncreate(
-							{ label: label.trim(), example: isDerived ? example : (initial?.text ?? ''), multiline, transform: isDerived ? createTransform : undefined },
-							all
-						);
+					if (!label.trim()) return;
+					oncreate(
+						{
+							label: label.trim(),
+							example: isDerived ? example : (initial?.text ?? ''),
+							multiline,
+							transform: isDerived ? createTransform : undefined
+						},
+						all
+					);
 				}}
-				class="grid gap-2"
 			>
 				<label>
-					<span class="label">Назва поля (буде у формі заповнення)</span>
+					<span class="label">Назва поля — так воно звучатиме у формі</span>
 					<input class="input" bind:value={label} use:focus />
 				</label>
-				<label class="flex items-center gap-2 text-sm">
-					<input type="checkbox" bind:checked={multiline} /> Багаторядкове
-				</label>
-				<label class="flex items-center gap-2 text-sm">
-					<input type="checkbox" bind:checked={isDerived} /> Фрагмент — похідна форма (відмінок, формат)
-				</label>
-				{#if isDerived}
-					<div class="grid gap-2 rounded-md bg-slate-50 p-2">
-						<label>
-							<span class="label">Значення поля в базовій формі (як вводитиметься)</span>
-							<input class="input" bind:value={example} placeholder="напр. КОВАЛЕНКО Пилип Ількович" />
+				<div class="flex flex-col gap-2 text-sm">
+					<label class="flex items-center gap-2"><input type="checkbox" bind:checked={multiline} /> Багаторядкове</label>
+					<label class="flex items-center gap-2">
+						<input type="checkbox" bind:checked={isDerived} /> Фрагмент у похідній формі (відмінок, формат)
+					</label>
+					{#if mode.occurrences > 1}
+						<label class="flex items-center gap-2">
+							<input type="checkbox" bind:checked={all} /> Позначити всі такі ж у документах кроку ({mode.occurrences})
 						</label>
-						<span class="label">Форма цього фрагмента</span>
+					{/if}
+				</div>
+				{#if isDerived}
+					<div class="grid gap-3 rounded-xl border border-line bg-sunken p-3">
+						<label>
+							<span class="label">Значення в базовій формі — як його вводитимуть</span>
+							<input class="input" bind:value={example} placeholder="напр. Петренко Олена Іванівна" />
+						</label>
 						<TransformEditor value={createTransform} onchange={(t) => (createTransform = t)} />
-						<p class="text-xs text-slate-500">
-							Перевірка: <TransformPreview value={example} transform={createTransform} />
-						</p>
+						{@render check(example, createTransform)}
 					</div>
 				{/if}
-				{#if mode.occurrences > 1}
-					<label class="flex items-center gap-2 text-sm">
-						<input type="checkbox" bind:checked={all} /> Позначити всі такі фрагменти в документах кроку ({mode.occurrences})
-					</label>
-				{/if}
-				<p class="text-xs text-slate-500">Поле заповнюється при формуванні документів (жовте).</p>
-				<button class="btn btn-primary justify-center">Створити поле</button>
+				<div class="flex justify-end gap-2">
+					<button type="button" class="btn" onclick={onclose}>Скасувати</button>
+					<button class="btn btn-primary">Створити поле</button>
+				</div>
 			</form>
 		{:else}
-			<div class="grid gap-2">
-				<label>
-					<span class="label">Поле</span>
-					<select class="input" bind:value={linkField}>
-						<option value="" disabled>— оберіть —</option>
-						{#each groups as g (g.name)}
-							<optgroup label={g.name}>
-								{#each g.fields as f (f.id)}<option value={f.id}>{f.label}</option>{/each}
-							</optgroup>
-						{/each}
-					</select>
-				</label>
+			<div class="grid gap-3">
+				{@render fieldSelect(linkField, (id) => (linkField = id))}
 				<TransformEditor value={linkTransform} onchange={(t) => (linkTransform = t)} />
-				{#if loc}
-					<p class="text-xs text-slate-500">
-						Приклад: <TransformPreview value={loc.field.example} transform={linkTransform} />
-					</p>
-				{/if}
+				{#if loc}{@render check(loc.field.example, linkTransform)}{/if}
 				{#if mode.occurrences > 1}
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={all} /> Усі такі фрагменти ({mode.occurrences})
 					</label>
 				{/if}
-				<button
-					class="btn btn-primary justify-center"
-					disabled={!linkField}
-					onclick={() => onlink(linkField, linkTransform, all)}
-				>
-					Пов’язати
-				</button>
+				<div class="flex justify-end gap-2">
+					<button class="btn" onclick={onclose}>Скасувати</button>
+					<button class="btn btn-primary" disabled={!linkField} onclick={() => onlink(linkField, linkTransform, all)}>Пов’язати</button>
+				</div>
 			</div>
 		{/if}
 	{:else if mark}
-		<div class="mb-2 flex items-start gap-2">
-			<div class="flex-1 text-sm">
-				<div class="font-medium">{loc?.field.label ?? 'Поле видалено'}</div>
-				<div class="text-xs text-slate-500">
-					{#if loc && loc.stepIndex === stepIndex}
-						поле цього кроку — вводиться
-					{:else if loc}
-						з кроку {loc.stepIndex + 1}: {steps[loc.stepIndex].name}
-					{/if}
-				</div>
-			</div>
-			<button class="btn btn-sm" onclick={onclose} aria-label="Закрити">✕</button>
-		</div>
-		<label class="mb-2 block">
-			<span class="label">Поле</span>
-			<select class="input" value={mark.fieldId} onchange={(e) => onupdate({ fieldId: e.currentTarget.value })}>
-				{#each groups as g (g.name)}
-					<optgroup label={g.name}>
-						{#each g.fields as f (f.id)}<option value={f.id}>{f.label}</option>{/each}
-					</optgroup>
-				{/each}
-			</select>
-		</label>
+		{@render fieldSelect(mark.fieldId, (id) => onupdate({ fieldId: id }))}
 		<TransformEditor value={mark.transform} onchange={(t) => onupdate({ transform: t })} />
-		{#if loc}
-			<p class="mt-2 text-xs text-slate-500">
-				Приклад: <TransformPreview value={loc.field.example} transform={mark.transform} />
-			</p>
-		{/if}
-		<div class="mt-3 flex justify-between">
-			<button class="btn btn-sm btn-danger" onclick={ondelete}>Зняти позначку</button>
-			<button class="btn btn-sm btn-primary" onclick={onclose}>Готово</button>
+		{#if loc}{@render check(loc.field.example, mark.transform)}{/if}
+		<div class="flex justify-between gap-2">
+			<button class="btn btn-danger" onclick={ondelete}><Icon name="trash" /> Зняти позначку</button>
+			<button class="btn btn-primary" onclick={onclose}>Готово</button>
 		</div>
 	{/if}
 </div>

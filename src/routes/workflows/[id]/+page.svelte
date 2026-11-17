@@ -2,10 +2,14 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { api, debounce } from '#lib/api.js';
+	import AppHeader from '#lib/components/AppHeader.svelte';
 	import DocPreview, {
 		type HighlightRange,
+		type MarginNote,
 		type SelectionInfo
 	} from '#lib/components/DocPreview.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import SaveStatus from '#lib/components/SaveStatus.svelte';
 	import MarkPopover from '#lib/components/MarkPopover.svelte';
 	import TransformEditor from '#lib/components/TransformEditor.svelte';
 	import TransformPreview from '#lib/components/TransformPreview.svelte';
@@ -345,6 +349,66 @@
 			return own.indexOf(o.field.id) < own.indexOf(fieldId);
 		});
 
+	/** Margin notes: one per mark (and suggestion) in the open document, by paragraph. */
+	const notes = $derived.by(() => {
+		const out: Record<string, MarginNote[]> = {};
+		if (!doc) return out;
+		const push = (para: string, n: MarginNote) => {
+			out[para] ??= [];
+			out[para].push(n);
+		};
+		const sorted = step.marks.filter((m) => m.docId === doc.id).sort((a, b) => a.start - b.start);
+		for (const m of sorted) {
+			const own = ownIds.has(m.fieldId);
+			const f = fieldLocation(wf.steps, m.fieldId)?.field;
+			const detail = [own && f?.defaultFrom ? 'авто' : '', describeTransform(m.transform)]
+				.filter(Boolean)
+				.join(' · ');
+			push(m.para, {
+				id: m.id,
+				kind: own ? 'own' : 'inherited',
+				label: labelOf(m.fieldId),
+				detail
+			});
+		}
+		for (const [si, s] of suggestions.entries())
+			for (const [oi, o] of s.occurrences.entries())
+				if (o.docId === doc.id)
+					push(o.para, { id: `hint:${si}:${oi}`, kind: 'hint', label: labelOf(s.fieldId) });
+		return out;
+	});
+
+	const markText = (m: Mark) => previews[m.docId]?.text[m.para]?.slice(m.start, m.end) ?? '';
+
+	let expandedField = $state<string | null>(null);
+	const ownCount = (i: number) => wf.steps[i].fields.length;
+	const inheritedCount = (i: number) => inheritedFields(wf.steps, i).length;
+	const plural = (n: number, one: string, few: string, many: string) => {
+		const m10 = n % 10;
+		const m100 = n % 100;
+		const w =
+			m10 === 1 && m100 !== 11
+				? one
+				: m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)
+					? few
+					: many;
+		return `${n} ${w}`;
+	};
+
+	/** File-name pattern split into text and `{Field}` tokens, for the pill view. */
+	const nameParts = $derived(
+		(doc?.outputName ?? '')
+			.split(/(\{[^{}]+\})/)
+			.filter(Boolean)
+			.map((t) => {
+				const m = t.match(/^\{(.+)\}$/);
+				if (!m) return { text: t };
+				const f = wf.steps.flatMap((s) => s.fields).find((x) => x.label === m[1].trim());
+				return { text: m[1], kind: f ? (ownIds.has(f.id) ? 'own' : 'inh') : 'missing' };
+			})
+	);
+	let editingName = $state(false);
+
 	let runForm: HTMLFormElement;
 	async function startRun() {
 		await save.flush();
@@ -361,94 +425,103 @@
 	}}
 />
 
-<div class="flex h-[calc(100vh-3rem)] flex-col">
-	<!-- toolbar -->
-	<div class="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
-		<a href="/" class="btn btn-sm">← Процеси</a>
-		<input class="input max-w-md font-semibold" bind:value={wf.name} aria-label="Назва процесу" />
-		<span class="text-xs text-slate-500">
-			{#if saveState === 'saved'}Збережено{:else if saveState === 'error'}<span class="text-red-600">Помилка збереження</span>{:else}Збереження…{/if}
-		</span>
-		<div class="ml-auto flex items-center gap-2">
-			{#if data.runs.length}
-				<details class="relative">
-					<summary class="btn btn-sm cursor-pointer list-none">Справи ({data.runs.length})</summary>
-					<ul class="card absolute right-0 z-40 mt-1 max-h-80 w-72 overflow-auto p-1">
-						{#each data.runs as r (r.id)}
-							<li><a class="block truncate rounded px-2 py-1 text-sm hover:bg-slate-100" href="/runs/{r.id}">{r.name}</a></li>
-						{/each}
-					</ul>
-				</details>
-			{/if}
-			<form bind:this={runForm} method="POST" action="/?/createRun">
-				<input type="hidden" name="workflowId" value={workflowId} />
-				<button type="button" class="btn btn-primary" onclick={startRun}>Сформувати документи →</button>
-			</form>
-		</div>
-	</div>
+<AppHeader crumbs={[{ href: '/', label: 'Процеси' }]}>
+	{#snippet title()}
+		<input
+			class="h-9 w-[min(28rem,60vw)] rounded-lg border border-transparent bg-transparent px-2 text-[17px] font-semibold hover:border-line focus:border-accent focus:bg-surface"
+			bind:value={wf.name}
+			aria-label="Назва процесу"
+		/>
+	{/snippet}
+	{#snippet actions()}
+		<SaveStatus state={saveState} />
+		{#if data.runs.length}
+			<details class="relative">
+				<summary class="btn btn-sm list-none">Справи · {data.runs.length}</summary>
+				<ul class="card absolute right-0 z-40 mt-1 max-h-80 w-72 overflow-auto p-1 shadow-lg">
+					{#each data.runs as r (r.id)}
+						<li>
+							<a class="block truncate rounded-lg px-3 py-2 text-sm text-ink no-underline hover:bg-ground" href="/runs/{r.id}">{r.name}</a>
+						</li>
+					{/each}
+				</ul>
+			</details>
+		{/if}
+		<form bind:this={runForm} method="POST" action="/?/createRun">
+			<input type="hidden" name="workflowId" value={workflowId} />
+			<button type="button" class="btn btn-primary" onclick={startRun}>
+				Сформувати документи <Icon name="arrow" size={18} stroke={2.2} />
+			</button>
+		</form>
+	{/snippet}
+</AppHeader>
 
-	<div class="grid min-h-0 flex-1 grid-cols-[14rem_1fr_22rem]">
-		<!-- steps -->
-		<nav class="overflow-auto border-r border-slate-200 bg-white p-3">
-			<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Кроки</h2>
-			<ol class="grid gap-1">
-				{#each wf.steps as s, i (s.id)}
-					<li>
-						<div
-							class="group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm {i === stepIndex
-								? 'bg-blue-50 text-blue-800'
-								: 'hover:bg-slate-100'}"
-						>
-							<button class="min-w-0 flex-1 truncate text-left" onclick={() => selectStep(i)}>
-								<span class="text-slate-400">{i + 1}.</span>
-								{s.name}
-								<span class="block text-xs text-slate-400">док.: {s.docs.length} · полів: {s.fields.length}</span>
-							</button>
-							<span class="hidden flex-col group-hover:flex">
-								<button class="text-xs leading-none text-slate-400 hover:text-slate-900" title="Вище" onclick={() => moveStep(i, -1)}>▲</button>
-								<button class="text-xs leading-none text-slate-400 hover:text-slate-900" title="Нижче" onclick={() => moveStep(i, 1)}>▼</button>
-							</span>
-						</div>
-					</li>
-				{/each}
-			</ol>
-			<button class="btn btn-sm mt-2 w-full justify-center" onclick={addStep}>+ Додати крок</button>
-		</nav>
+<section aria-label="Кроки процесу" class="border-b border-line bg-surface">
+	<ol class="flex items-stretch gap-2.5 overflow-x-auto px-6 py-3.5">
+		{#each wf.steps as s, i (s.id)}
+			<li class="flex items-center gap-2.5">
+				<button
+					class="flex min-w-56 cursor-pointer items-center gap-3 rounded-xl py-2.5 pr-4 pl-2.5 text-left {i === stepIndex
+						? 'border-2 border-accent bg-[#f5f7ff]'
+						: 'border border-line hover:bg-sunken'}"
+					aria-current={i === stepIndex ? 'step' : undefined}
+					onclick={() => selectStep(i)}
+				>
+					<span
+						class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-bold {i === stepIndex
+							? 'bg-accent text-white'
+							: 'bg-ground'}">{i + 1}</span
+					>
+					<span class="flex min-w-0 flex-col leading-tight">
+						<span class="max-w-48 truncate text-sm font-semibold">{s.name}</span>
+						<span class="text-[13px] text-muted">
+							{plural(s.docs.length, 'документ', 'документи', 'документів')} · {plural(ownCount(i), 'поле', 'поля', 'полів')}{#if i > 0 && inheritedCount(i)}&nbsp;· +{inheritedCount(i)} з попер.{/if}
+						</span>
+					</span>
+				</button>
+				{#if i < wf.steps.length - 1}<Icon name="chevron" size={18} class="text-faint" />{/if}
+			</li>
+		{/each}
+		<li class="ml-1 flex items-center">
+			<button class="btn h-[54px] rounded-xl border-[1.5px] border-dashed border-[#b8c0cc] bg-transparent text-muted" onclick={addStep}>
+				<Icon name="plus" /> Крок
+			</button>
+		</li>
+	</ol>
+</section>
 
-		<!-- documents -->
-		<section class="flex min-w-0 flex-col overflow-hidden">
-			{#if step}
-				<div class="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
-					<input class="input max-w-xs" bind:value={step.name} aria-label="Назва кроку" />
-					<button class="btn btn-sm btn-danger" onclick={() => deleteStep(stepIndex)} disabled={wf.steps.length < 2}>
-						Видалити крок
-					</button>
-					<div class="ml-auto flex items-center gap-3 text-xs text-slate-600">
-						<span><span class="inline-block h-3 w-3 rounded-sm bg-amber-200 align-middle"></span> поле кроку</span>
-						<span><span class="inline-block h-3 w-3 rounded-sm bg-green-200 align-middle"></span> з попереднього кроку</span>
-						<span><span class="inline-block w-4 border-b-2 border-dashed border-violet-600 align-middle"></span> підказка</span>
-					</div>
-				</div>
+{#if step}
+	<div class="flex flex-wrap items-start gap-6 px-6 pt-5 pb-12">
+		<section aria-label="Документ кроку" class="min-w-0 flex-[999_1_720px]">
+			<div class="mb-4 flex flex-wrap items-center gap-2">
+				<span class="text-[13px] font-semibold text-muted">Крок {stepIndex + 1}</span>
+				<input class="input h-10 max-w-sm flex-1 font-semibold" bind:value={step.name} aria-label="Назва кроку" />
+				<button class="btn btn-sm btn-icon" aria-label="Перемістити крок раніше" disabled={stepIndex === 0} onclick={() => moveStep(stepIndex, -1)}>
+					<Icon name="chevron-left" />
+				</button>
+				<button class="btn btn-sm btn-icon" aria-label="Перемістити крок пізніше" disabled={stepIndex === wf.steps.length - 1} onclick={() => moveStep(stepIndex, 1)}>
+					<Icon name="chevron" />
+				</button>
+				<button class="btn btn-sm btn-danger" disabled={wf.steps.length < 2} onclick={() => deleteStep(stepIndex)}>
+					<Icon name="trash" /> Видалити крок
+				</button>
+			</div>
 
-				<div class="flex items-center gap-1 overflow-x-auto border-b border-slate-200 bg-slate-100 px-2 pt-2">
+			<div class="mb-3.5 flex flex-wrap items-center gap-3">
+				<div class="segmented" role="tablist" aria-label="Документи кроку">
 					{#each step.docs as d (d.id)}
-						<button
-							class="max-w-56 shrink-0 truncate rounded-t-md border border-b-0 px-3 py-1.5 text-sm {d.id === doc?.id
-								? 'border-slate-200 bg-white font-medium'
-								: 'border-transparent text-slate-600 hover:bg-slate-200'}"
-							onclick={() => (docId = d.id)}
-							title={d.name}
-						>
+						<button role="tab" aria-selected={d.id === doc?.id} class="max-w-56 truncate" title={d.name} onclick={() => (docId = d.id)}>
 							{d.name}
 						</button>
 					{/each}
-					<label class="btn btn-sm mb-1 ml-1 shrink-0 cursor-pointer">
-						{uploading ? 'Завантаження…' : '+ Документ (.docx)'}
+					<label class="flex h-9 cursor-pointer items-center gap-1 rounded-[7px] px-3 text-sm font-semibold text-muted hover:text-ink">
+						<Icon name="plus" size={15} />
+						{uploading ? 'Завантаження…' : 'Документ'}
 						<input
 							type="file"
 							accept=".docx"
 							multiple
-							class="hidden"
+							class="sr-only"
 							onchange={(e) => {
 								upload(e.currentTarget.files);
 								e.currentTarget.value = '';
@@ -456,193 +529,241 @@
 						/>
 					</label>
 				</div>
+				<div class="flex-1"></div>
+				<ul aria-label="Позначення" class="flex flex-wrap gap-3.5 text-[13px] text-muted">
+					<li class="flex items-center gap-1.5"><span class="h-3 w-4 rounded-sm bg-own shadow-[inset_0_-2px_0_var(--color-own-line)]"></span>вводиться тут</li>
+					<li class="flex items-center gap-1.5"><span class="h-3 w-4 rounded-sm bg-inh shadow-[inset_0_-2px_0_var(--color-inh-line)]"></span>з попереднього кроку</li>
+					<li class="flex items-center gap-1.5"><span class="w-4 border-t-2 border-dashed border-hint"></span>підказка</li>
+				</ul>
+			</div>
 
-				{#if doc && previews[doc.id]}
-					<div class="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
-						<label class="flex flex-1 items-center gap-2">
-							<span class="shrink-0 text-xs text-slate-500">Назва файлу результату</span>
-							<input
-								class="input"
-								bind:value={doc.outputName}
-								title="Можна вставляти значення полів: {'{'}Назва поля{'}'}"
-								placeholder="напр. Наказ {'{'}ПІБ{'}'}"
-							/>
-						</label>
-						<a class="btn btn-sm" href="/api/documents/{doc.id}" download>⤓ Зразок</a>
-						<button class="btn btn-sm btn-danger" onclick={() => deleteDoc(doc)}>Видалити документ</button>
-					</div>
-					<div class="min-h-0 flex-1 overflow-auto bg-slate-100 p-6">
-						<p class="mx-auto mb-3 max-w-3xl text-center text-xs text-slate-500">
-							Виділіть мишею фрагмент, який змінюватиметься: створіть з нього поле або візьміть значення з поля
-							попереднього кроку. Клік по позначці — змінити її.
-						</p>
-						<DocPreview
-							preview={previews[doc.id]}
-							{ranges}
-							{active}
-							{onselect}
-							{onrangeclick}
-							onerror={say}
+			{#if doc && previews[doc.id]}
+				<div class="card mb-4 flex flex-wrap items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-sm">
+					<span class="text-muted">Назва файлу:</span>
+					{#if editingName}
+						<input
+							class="input h-9 flex-1"
+							bind:value={doc.outputName}
+							aria-label="Шаблон назви файлу"
+							placeholder="напр. Наказ {'{'}ПІБ працівника{'}'}"
+							onkeydown={(e) => e.key === 'Enter' && (editingName = false)}
 						/>
-					</div>
-				{:else}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div
-						class="m-6 flex flex-1 flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 text-center {dragOver
-							? 'border-blue-500 bg-blue-50'
-							: 'border-slate-300'}"
-						ondragover={(e) => {
-							e.preventDefault();
-							dragOver = true;
-						}}
-						ondragleave={() => (dragOver = false)}
-						ondrop={(e) => {
-							e.preventDefault();
-							dragOver = false;
-							upload(e.dataTransfer?.files ?? null);
-						}}
-					>
-						<p class="mb-2 text-lg font-medium">Завантажте зразки документів цього кроку</p>
-						<p class="mb-4 max-w-md text-sm text-slate-500">
-							Перетягніть сюди один або кілька заповнених документів .docx. Потім позначте в них частини,
-							що змінюються.
-						</p>
-						<label class="btn btn-primary cursor-pointer">
-							Обрати файли
-							<input type="file" accept=".docx" multiple class="hidden" onchange={(e) => upload(e.currentTarget.files)} />
-						</label>
-					</div>
-				{/if}
+						<button class="btn btn-sm" onclick={() => (editingName = false)}>Готово</button>
+					{:else}
+						<span class="flex min-w-60 flex-1 flex-wrap items-center gap-1.5">
+							{#each nameParts as part, i (i)}
+								{#if part.kind}
+									<span
+										class="rounded-md px-2 py-0.5 text-[13px] font-semibold {part.kind === 'own'
+											? 'bg-own-soft text-own-ink'
+											: part.kind === 'inh'
+												? 'bg-inh-soft text-inh-ink'
+												: 'bg-danger-soft text-danger'}"
+										title={part.kind === 'missing' ? 'Немає поля з такою назвою' : undefined}>{part.text}</span
+									>
+								{:else}{part.text}{/if}
+							{/each}
+							<span class="text-muted">.docx</span>
+						</span>
+						<button class="btn btn-sm" onclick={() => (editingName = true)}>Змінити</button>
+					{/if}
+					<a class="btn btn-sm btn-ghost no-underline" href="/api/documents/{doc.id}" download>
+						<Icon name="download" /> Зразок
+					</a>
+					<button class="btn btn-sm btn-ghost btn-icon" aria-label="Видалити документ" onclick={() => deleteDoc(doc)}>
+						<Icon name="trash" />
+					</button>
+				</div>
+
+				<p class="mb-3 text-[13px] text-muted">
+					Виділіть фрагмент, що змінюється, — створіть з нього поле або візьміть значення з попереднього кроку.
+					Клік по позначці чи нотатці на полях — змінити її.
+				</p>
+				<DocPreview preview={previews[doc.id]} {ranges} {active} {notes} {onselect} {onrangeclick} onerror={say} />
+			{:else}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="flex min-h-96 flex-col items-center justify-center rounded-2xl border-2 border-dashed p-10 text-center {dragOver
+						? 'border-accent bg-accent-soft'
+						: 'border-[#b8c0cc]'}"
+					ondragover={(e) => {
+						e.preventDefault();
+						dragOver = true;
+					}}
+					ondragleave={() => (dragOver = false)}
+					ondrop={(e) => {
+						e.preventDefault();
+						dragOver = false;
+						upload(e.dataTransfer?.files ?? null);
+					}}
+				>
+					<span class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface">
+						<Icon name="upload" size={24} />
+					</span>
+					<p class="mb-2 text-lg font-semibold">Завантажте зразки документів цього кроку</p>
+					<p class="mb-5 max-w-md text-sm text-muted">
+						Перетягніть сюди один або кілька заповнених .docx. Потім виділіть у них частини, що змінюються.
+					</p>
+					<label class="btn btn-primary cursor-pointer">
+						Обрати файли
+						<input type="file" accept=".docx" multiple class="sr-only" onchange={(e) => upload(e.currentTarget.files)} />
+					</label>
+				</div>
 			{/if}
 		</section>
 
-		<!-- fields -->
-		<aside class="overflow-auto border-l border-slate-200 bg-white p-3">
-			{#if step}
-				<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-					Поля кроку ({step.fields.length})
-				</h2>
-				{#if !step.fields.length}
-					<p class="mb-4 text-sm text-slate-500">Виділіть текст у документі, щоб створити поле.</p>
-				{/if}
-				<ul class="mb-6 grid gap-2">
+		<aside aria-label="Поля" class="flex max-w-[400px] flex-[1_1_320px] flex-col gap-4">
+			<section class="card p-[18px]">
+				<h2 class="section-title mb-1">Поля кроку <span class="font-medium text-muted">· {step.fields.length}</span></h2>
+				<p class="mb-3 text-[13px] text-muted">
+					{step.fields.length ? 'Заповнюються під час формування документів.' : 'Виділіть текст у документі, щоб створити поле.'}
+				</p>
+				<ul class="flex flex-col gap-1">
 					{#each step.fields as f (f.id)}
 						{@const opts = defaultOptions(f.id)}
-						<li class="rounded-md border p-2 {activeField === f.id ? 'border-blue-500' : 'border-slate-200'}">
+						{@const open = expandedField === f.id}
+						<li class="rounded-[10px] {activeField === f.id || open ? 'bg-sunken' : ''}">
 							<div class="flex items-center gap-1">
-								<span class="h-3 w-3 shrink-0 rounded-sm bg-amber-200"></span>
-								<input class="input py-1" bind:value={f.label} />
-								<button class="btn btn-sm" title="Показати в документі" onclick={() => focusField(f.id)}>
-									{markCount(f.id)}
+								<button
+									class="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 rounded-[10px] p-2.5 text-left hover:bg-sunken"
+									aria-expanded={open}
+									onclick={() => (expandedField = open ? null : f.id)}
+								>
+									<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-own-soft text-own-ink">
+										<Icon name="pencil" size={14} stroke={2.2} />
+									</span>
+									<span class="min-w-0">
+										<span class="block truncate text-sm font-semibold">{f.label}</span>
+										<span class="block truncate text-[13px] text-muted">
+											{#if f.defaultFrom}авто: {labelOf(f.defaultFrom.fieldId)}{describeTransform(f.defaultFrom.transform) ? ` · ${describeTransform(f.defaultFrom.transform)}` : ''}{:else}зразок «{f.example}»{/if}
+										</span>
+									</span>
 								</button>
-								<button class="btn btn-sm btn-danger" title="Видалити поле" onclick={() => deleteField(f.id)}>✕</button>
+								<button
+									class="btn btn-ghost btn-sm shrink-0 px-2 {activeField === f.id ? 'text-accent' : ''}"
+									title="Показати в документі"
+									aria-pressed={activeField === f.id}
+									onclick={() => focusField(f.id)}
+								>
+									{plural(markCount(f.id), 'місце', 'місця', 'місць')}
+								</button>
 							</div>
-							<p class="mt-1 truncate text-xs text-slate-500" title={f.example}>Зразок: «{f.example}»</p>
-							<div class="mt-1 flex items-center gap-3 text-xs">
-								<label class="flex items-center gap-1">
-									<input
-										type="checkbox"
-										checked={!!f.multiline}
-										onchange={(e) => (f.multiline = e.currentTarget.checked)}
-									/> багаторядкове
-								</label>
-							</div>
-							{#if opts.length}
-								<details class="mt-1 text-xs" open={!!f.defaultFrom}>
-									<summary class="cursor-pointer text-slate-600">
-										Автозаповнення {f.defaultFrom ? `з «${labelOf(f.defaultFrom.fieldId)}»` : '— вимкнено'}
-									</summary>
-									<div class="mt-2 grid gap-2">
-										<select
-											class="input"
-											value={f.defaultFrom?.fieldId ?? ''}
-											onchange={(e) => {
-												const v = e.currentTarget.value;
-												f.defaultFrom = v ? { fieldId: v, transform: f.defaultFrom?.transform } : null;
-											}}
-										>
-											<option value="">— не заповнювати автоматично —</option>
-											{#each opts as o (o.field.id)}
-												<option value={o.field.id}>
-													{o.stepIndex === stepIndex ? '' : `Крок ${o.stepIndex + 1} · `}{o.field.label}
-												</option>
-											{/each}
-										</select>
-										{#if f.defaultFrom}
-											{@const src = fieldLocation(wf.steps, f.defaultFrom.fieldId)}
-											<TransformEditor
-												value={f.defaultFrom.transform}
-												onchange={(t) => {
-													if (f.defaultFrom) f.defaultFrom = { fieldId: f.defaultFrom.fieldId, ...(t ? { transform: t } : {}) };
-												}}
-											/>
-											{#if src}
-												<p class="text-slate-500">
-													Приклад: <TransformPreview value={src.field.example} transform={f.defaultFrom.transform} />
-												</p>
+							{#if open}
+								<div class="grid gap-3 px-2.5 pt-1 pb-3">
+									<label>
+										<span class="label">Назва поля</span>
+										<input class="input h-10" bind:value={f.label} />
+									</label>
+									<p class="text-[13px] text-muted">Зразок: «{f.example}»</p>
+									<label class="flex items-center gap-2 text-sm">
+										<input type="checkbox" checked={!!f.multiline} onchange={(e) => (f.multiline = e.currentTarget.checked)} />
+										Багаторядкове
+									</label>
+									{#if opts.length}
+										<div class="grid gap-2 rounded-[10px] border border-line bg-surface p-3">
+											<label>
+												<span class="label">Автозаповнення</span>
+												<select
+													class="input h-10"
+													value={f.defaultFrom?.fieldId ?? ''}
+													onchange={(e) => {
+														const v = e.currentTarget.value;
+														f.defaultFrom = v ? { fieldId: v, transform: f.defaultFrom?.transform } : null;
+													}}
+												>
+													<option value="">— не заповнювати автоматично —</option>
+													{#each opts as o (o.field.id)}
+														<option value={o.field.id}>{o.stepIndex === stepIndex ? '' : `Крок ${o.stepIndex + 1} · `}{o.field.label}</option>
+													{/each}
+												</select>
+											</label>
+											{#if f.defaultFrom}
+												{@const src = fieldLocation(wf.steps, f.defaultFrom.fieldId)}
+												<TransformEditor
+													value={f.defaultFrom.transform}
+													onchange={(t) => {
+														if (f.defaultFrom) f.defaultFrom = { fieldId: f.defaultFrom.fieldId, ...(t ? { transform: t } : {}) };
+													}}
+												/>
+												{#if src}
+													<p class="text-[13px] text-muted">
+														Приклад: <TransformPreview value={src.field.example} transform={f.defaultFrom.transform} />
+													</p>
+												{/if}
+												<p class="text-[13px] text-muted">Якщо лишити поле порожнім, значення візьметься звідси.</p>
 											{/if}
-											<p class="text-slate-500">Якщо поле лишити порожнім, значення візьметься звідси.</p>
-										{/if}
-									</div>
-								</details>
+										</div>
+									{/if}
+									<button class="btn btn-sm btn-danger justify-self-start" onclick={() => deleteField(f.id)}>
+										<Icon name="trash" /> Видалити поле
+									</button>
+								</div>
 							{/if}
 						</li>
 					{/each}
 				</ul>
+			</section>
 
-				{#if inherited.length}
-					<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">З попередніх кроків</h2>
-					<ul class="mb-6 grid gap-1">
+			{#if inherited.length}
+				<section class="card p-[18px]">
+					<h2 class="section-title mb-3">З попередніх кроків <span class="font-medium text-muted">· {inherited.length}</span></h2>
+					<ul class="flex flex-col text-sm">
 						{#each inherited as o (o.field.id)}
-							<li class="flex items-center gap-2 text-sm">
-								<span class="h-3 w-3 shrink-0 rounded-sm bg-green-200"></span>
-								<button class="min-w-0 flex-1 truncate text-left hover:underline" onclick={() => focusField(o.field.id)}>
-									{o.field.label}
+							<li>
+								<button
+									class="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-1 py-2 text-left hover:bg-sunken {activeField === o.field.id ? 'bg-sunken' : ''}"
+									aria-pressed={activeField === o.field.id}
+									onclick={() => focusField(o.field.id)}
+								>
+									<Icon name="link" size={15} stroke={2.2} class="text-inh-line" />
+									<span class="min-w-0 flex-1 truncate">{o.field.label}</span>
+									<span class="text-[13px] text-muted">крок {o.stepIndex + 1} · ×{o.count}</span>
 								</button>
-								<span class="text-xs text-slate-400">крок {o.stepIndex + 1} · ×{o.count}</span>
 							</li>
 						{/each}
 					</ul>
-				{/if}
+				</section>
+			{/if}
 
-				{#if suggestions.length}
-					<h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-violet-700">Підказки</h2>
-					<p class="mb-2 text-xs text-slate-500">
-						Значення полів знайдено в документах кроку (з урахуванням відмінків і форматів).
+			{#if suggestions.length}
+				<section class="rounded-2xl border border-hint-border bg-hint-soft p-[18px]">
+					<h2 class="section-title mb-1 text-[#2e1f7a]">Підказки</h2>
+					<p class="mb-3 text-[13px] text-[#4a3f7a]">
+						Знайдено значення полів у документах кроку — з урахуванням відмінків і форматів імені.
 					</p>
-					<ul class="mb-2 grid gap-1">
+					<ul class="flex flex-col gap-2">
 						{#each suggestions as s (s.fieldId + JSON.stringify(s.transform ?? {}))}
 							{@const t = describeTransform(s.transform)}
-							<li class="rounded-md border border-violet-200 bg-violet-50 p-2 text-xs">
-								<div class="font-serif text-sm">«{s.text}»</div>
-								<div class="flex items-center gap-2">
-									<span class="min-w-0 flex-1 text-slate-600">
-										→ {labelOf(s.fieldId)}{t ? ` · ${t}` : ''} · ×{s.occurrences.length}
-									</span>
-									<button class="btn btn-sm" onclick={() => applySuggestion(s)}>Позначити</button>
-								</div>
+							<li class="flex flex-col gap-2 rounded-xl border border-dashed border-[#a897f0] bg-surface p-3">
+								<span class="font-paper text-[17px]">«{s.text}»</span>
+								<span class="flex flex-wrap items-center gap-2 text-[13px] text-hint-ink">
+									<span class="flex-1">→ {labelOf(s.fieldId)}{t ? ` · ${t}` : ''} · {plural(s.occurrences.length, 'місце', 'місця', 'місць')}</span>
+									<button class="btn btn-sm border-0 bg-hint-strong text-white hover:bg-hint-ink" onclick={() => applySuggestion(s)}>Позначити</button>
+								</span>
 							</li>
 						{/each}
 					</ul>
-					<button
-						class="btn btn-sm w-full justify-center"
-						onclick={() => {
-							for (const s of suggestions) applySuggestion(s);
-						}}
-					>
-						Позначити всі підказки
-					</button>
-				{/if}
+					{#if suggestions.length > 1}
+						<button
+							class="btn btn-sm mt-3 w-full border-hint-border text-hint-ink"
+							onclick={() => {
+								for (const s of suggestions) applySuggestion(s);
+							}}
+						>
+							Позначити всі підказки
+						</button>
+					{/if}
+				</section>
 			{/if}
 		</aside>
 	</div>
-</div>
+{/if}
 
 {#if popover && step}
 	{#key popover.kind === 'mark' ? popover.markId : `${popover.range.para}:${popover.range.start}`}
 		<MarkPopover
 			mode={popover.kind === 'mark' && popMark
-				? { kind: 'mark', mark: popMark, rect: popover.rect }
+				? { kind: 'mark', mark: popMark, text: markText(popMark), rect: popover.rect }
 				: popover.kind === 'new'
 					? {
 							kind: 'new',
@@ -665,7 +786,7 @@
 {/if}
 
 {#if toast}
-	<div class="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
+	<div class="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-ink px-4 py-2.5 text-sm text-white shadow-lg" role="status">
 		{toast}
 	</div>
 {/if}

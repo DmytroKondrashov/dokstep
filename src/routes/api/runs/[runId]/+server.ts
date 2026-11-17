@@ -1,9 +1,9 @@
 import { error, json } from '@sveltejs/kit';
 import { getRun, getWorkflow, saveRun } from '#lib/server/db.js';
-import { resolveFields } from '#lib/server/engine.js';
+import { resolveFields, resolveMarks } from '#lib/server/engine.js';
 import type { RequestHandler } from './$types';
 
-/** PUT { name, values } → saves and returns every field's resolved value. */
+/** PUT { name, values } → saves; returns every field's value and every mark's text. */
 export const PUT: RequestHandler = async ({ params, request }) => {
 	const run = getRun(params.runId);
 	if (!run) error(404, 'Справу не знайдено');
@@ -13,5 +13,6 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		values: Record<string, string>;
 	};
 	saveRun(run.id, name?.trim() || run.name, values ?? {});
-	return json({ resolved: await resolveFields(workflow.steps, values ?? {}) });
+	const resolved = await resolveFields(workflow.steps, values ?? {});
+	return json({ resolved, markValues: await resolveMarks(workflow.steps, resolved) });
 };

@@ -4,9 +4,12 @@
 	import type { Transform } from '#lib/types.js';
 
 	/** Shows what `value` becomes after `transform` (computed on the server). */
-	let { value, transform }: { value: string; transform: Transform | undefined } = $props();
+	let {
+		value,
+		transform,
+		result = $bindable('')
+	}: { value: string; transform: Transform | undefined; result?: string } = $props();
 
-	let result = $state('');
 	$effect(() => {
 		const v = value;
 		const t = transform;
@@ -26,4 +29,4 @@
 	});
 </script>
 
-<span class="font-serif">{result || '—'}</span>
+<span class="font-paper text-[15px] text-ink">{result || '—'}</span>

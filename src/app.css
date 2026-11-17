@@ -1,25 +1,127 @@
+@import "@fontsource-variable/onest";
+@import "@fontsource/tinos/400.css";
+@import "@fontsource/tinos/700.css";
+@import "@fontsource/tinos/400-italic.css";
 @import "tailwindcss";
+
+/*
+ * Design: «Поля на берегах» — the document is the hero, on paper in a Times-like serif;
+ * fields are annotated in the margin. Yellow = typed on this step, green = taken from an
+ * earlier step, violet dashed = suggestion. Every colour also has an icon.
+ */
+@theme {
+	--font-sans: "Onest Variable", system-ui, sans-serif;
+	--font-paper: "Tinos", "Times New Roman", Times, serif;
+
+	--color-ink: #161b26;
+	--color-ink-2: #2e3646;
+	--color-muted: #4a5468;
+	--color-faint: #9aa3b2;
+	--color-line: #dce0e6;
+	--color-line-soft: #ebeef2;
+	--color-ground: #eef1f4;
+	--color-surface: #ffffff;
+	--color-sunken: #f4f6f8;
+
+	--color-accent: #2547d0;
+	--color-accent-hover: #1a36a8;
+	--color-accent-soft: #eef2ff;
+	--color-accent-ink: #1a2f8f;
+
+	/* marks */
+	--color-own: #ffe7a3;
+	--color-own-line: #c98a00;
+	--color-own-soft: #fff3cf;
+	--color-own-border: #f0d78a;
+	--color-own-ink: #5e3d00;
+	--color-inh: #d3eedf;
+	--color-inh-line: #1e7a4e;
+	--color-inh-soft: #e3f4ea;
+	--color-inh-border: #b7dfc8;
+	--color-inh-ink: #145c3a;
+	--color-hint: #6b4fd8;
+	--color-hint-strong: #5b3fd1;
+	--color-hint-soft: #f6f3ff;
+	--color-hint-border: #dcd3ff;
+	--color-hint-ink: #3f2a9e;
+
+	--color-danger: #b42318;
+	--color-danger-soft: #fef3f2;
+}
+
+@layer base {
+	body {
+		@apply bg-ground font-sans text-[15px] leading-normal text-ink antialiased;
+	}
+	:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
+	}
+}
 
 @layer components {
 	.btn {
-		@apply inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-100 disabled:opacity-50;
+		@apply inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#c9cfd8] bg-surface px-4 text-sm font-semibold whitespace-nowrap text-ink transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-50;
 	}
 	.btn-primary {
-		@apply border-blue-600 bg-blue-600 text-white hover:bg-blue-700;
+		@apply border-accent bg-accent text-white hover:bg-accent-hover;
+	}
+	.btn-ghost {
+		@apply border-transparent bg-transparent text-muted hover:bg-ground hover:text-ink;
 	}
 	.btn-danger {
-		@apply border-red-200 text-red-700 hover:bg-red-50;
+		@apply border-line text-danger hover:bg-danger-soft;
 	}
 	.btn-sm {
-		@apply px-2 py-0.5 text-xs;
+		@apply h-9 rounded-lg px-3 text-[13px];
+	}
+	.btn-icon {
+		@apply h-9 w-9 px-0;
 	}
 	.input {
-		@apply w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none;
+		@apply h-11 w-full rounded-[10px] border border-[#c9cfd8] bg-surface px-3 text-[15px] text-ink placeholder:text-faint focus:border-accent focus:outline-2 focus:outline-offset-0 focus:outline-accent/25;
+	}
+	textarea.input {
+		@apply h-auto py-2.5;
 	}
 	.label {
-		@apply mb-1 block text-xs font-medium text-slate-600;
+		@apply mb-1.5 block text-[13px] font-semibold text-ink-2;
 	}
 	.card {
-		@apply rounded-lg border border-slate-200 bg-white shadow-sm;
+		@apply rounded-2xl border border-line bg-surface;
+	}
+	.segmented {
+		@apply flex gap-1 rounded-[10px] bg-[#e2e6eb] p-1;
+	}
+	.segmented > button {
+		@apply h-9 cursor-pointer rounded-[7px] px-3 text-sm font-semibold text-muted;
+	}
+	.segmented > button[aria-pressed="true"],
+	.segmented > button[aria-selected="true"] {
+		@apply bg-surface text-ink shadow-[0_1px_2px_rgb(22_27_38/0.1)];
+	}
+	.chip {
+		@apply inline-flex max-w-full items-center gap-1.5 rounded-[7px] border px-2 py-[3px] text-left text-[12.5px] leading-snug;
+	}
+	.chip-own {
+		@apply border-own-border bg-own-soft text-own-ink;
+	}
+	.chip-inh {
+		@apply border-inh-border bg-inh-soft text-inh-ink;
+	}
+	.chip-hint {
+		@apply border-dashed border-[#a897f0] bg-hint-soft text-hint-ink;
+	}
+	.pill {
+		@apply h-8 cursor-pointer rounded-full border border-line bg-surface px-2.5 text-[13px] text-ink-2;
+	}
+	.pill[aria-pressed="true"] {
+		@apply border-accent bg-accent-soft font-semibold text-accent-ink;
+	}
+	.section-title {
+		@apply text-base font-bold text-ink;
+	}
+	.sr-only-focusable:not(:focus) {
+		@apply sr-only;
 	}
 }

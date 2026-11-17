@@ -9,9 +9,46 @@ import {
 	listWorkflows
 } from '#lib/server/db.js';
 import { createDemoWorkflow } from '#lib/server/demo.js';
+import type { Step, Workflow } from '#lib/types.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = () => ({ workflows: listWorkflows(), runs: listRuns() });
+/** Thumbnail lines for a step: its marks in reading order, own (yellow) vs inherited (green). */
+function bars(step: Step): ('own' | 'inh' | 'plain')[] {
+	const own = new Set(step.fields.map((f) => f.id));
+	const marks = [...step.marks].sort(
+		(a, b) => a.para.localeCompare(b.para, undefined, { numeric: true }) || a.start - b.start
+	);
+	const out: ('own' | 'inh' | 'plain')[] = [];
+	for (const m of marks.slice(0, 4)) out.push(own.has(m.fieldId) ? 'own' : 'inh', 'plain');
+	return out.length ? out : ['plain', 'plain', 'plain'];
+}
+
+/** A step is complete when each of its fields is typed or filled automatically. */
+function stepsDone(wf: Workflow, values: Record<string, string>) {
+	return wf.steps.filter((s) => s.fields.every((f) => values[f.id]?.trim() || f.defaultFrom))
+		.length;
+}
+
+export const load: PageServerLoad = () => {
+	const runs = listRuns();
+	const workflows = listWorkflows().map((summary) => {
+		const wf = getWorkflow(summary.id)!;
+		return {
+			...summary,
+			fields: wf.steps.reduce((n, s) => n + s.fields.length, 0),
+			runs: runs.filter((r) => r.workflowId === wf.id).length,
+			steps: wf.steps.map((s) => ({ name: s.name, bars: bars(s) }))
+		};
+	});
+	const byId = new Map(listWorkflows().map((w) => [w.id, getWorkflow(w.id)!]));
+	return {
+		workflows,
+		runs: runs.slice(0, 12).map((r) => {
+			const wf = byId.get(r.workflowId)!;
+			return { ...r, stepsTotal: wf.steps.length, stepsDone: stepsDone(wf, r.values) };
+		})
+	};
+};
 
 export const actions: Actions = {
 	createWorkflow: async ({ request }) => {
